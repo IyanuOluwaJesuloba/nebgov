@@ -289,9 +289,10 @@ fn test_full_proposal_lifecycle() {
     let proposer = Address::generate(&env);
     let fn_name = Symbol::new(&env, "exec_gov");
     // The calldata uniquely identifies this operation in the timelock.
-    // We encode the proposal topic as its bytes; no structured args needed
-    // for the no-arg exec_gov function (full arg encoding is TODO issue #6).
-    let calldata = Bytes::new(&env);
+    // Encode realistic argument data representing a governance action payload
+    // (e.g., protocol upgrade parameters or treasury operation details).
+    let mut calldata = Bytes::new(&env);
+    calldata.append(&Bytes::from_slice(&env, b"protocol_version_3.2"));
     let description = soroban_sdk::String::from_str(&env, "Execute mock governance action");
 
     // Create Vec with single target, fn_name, and calldata
@@ -395,6 +396,19 @@ fn test_full_proposal_lifecycle() {
 
         proposal.op_ids.get(0).unwrap()
     });
+
+    // Verify the timelock operation ID matches the expected hash.
+    // compute_op_id hashes: target | calldata | predecessor (empty) | salt (empty)
+    let expected_op_id = timelock_client.compute_op_id(
+        &mock_target_id,
+        &calldata,
+        &Bytes::new(&env),
+        &Bytes::new(&env),
+    );
+    assert_eq!(
+        op_id, expected_op_id,
+        "timelock operation ID should match expected hash of calldata"
+    );
 
     // is_pending: scheduled but delay not yet elapsed.
     assert!(

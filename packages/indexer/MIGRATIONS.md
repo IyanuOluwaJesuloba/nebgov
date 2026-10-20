@@ -1,8 +1,10 @@
 # Indexer migration maintenance
 
-Migration filenames must begin with a unique three-digit prefix. Run
+Migration filenames must begin with a unique three-digit prefix (000–999).
+Prefixes are assigned sequentially; when migrations are added out of order,
+renumber older ones to avoid collisions. Run
 `pnpm --filter @nebgov/indexer run check:migrations` before committing a new
-migration; CI runs the same check.
+migration; CI runs the same check and rejects duplicate prefixes.
 
 ## Upgrading databases that ran a renamed migration
 

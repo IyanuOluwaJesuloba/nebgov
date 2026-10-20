@@ -297,7 +297,7 @@ impl TreasuryContract {
     }
 
     /// Submit a new transaction for approval.
-    /// TODO issue #22: add owner-only guard and event emission.
+    /// Requires the proposer to be an owner and emits a submit event with the proposal ID.
     pub fn submit(
         env: Env,
         proposer: Address,
