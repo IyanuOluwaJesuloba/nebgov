@@ -12,6 +12,11 @@ Common errors when interacting with NebGov on Stellar, along with their causes a
 - [Contract Errors](#contract-errors)
 - [Voting and Proposals](#voting-and-proposals)
 - [Liquidity Contract Errors](#liquidity-contract-errors)
+- [Proposal Bonds Errors](#proposal-bonds-errors)
+- [Optimistic Governance Errors](#optimistic-governance-errors)
+- [Conviction Voting Errors](#conviction-voting-errors)
+- [Treasury Strategies Errors](#treasury-strategies-errors)
+- [Signaling Errors](#signaling-errors)
 - [FAQ](#faq)
 
 ---
@@ -464,6 +469,574 @@ Common errors when interacting with NebGov on Stellar, along with their causes a
 **Fix:**
 1. Re-simulate the swap immediately before submitting to get the latest output.
 2. Add a slippage tolerance (e.g., 0.5%) to `min_amount_out`: `min_amount_out = simulated_out * 995 / 1000`.
+
+---
+
+## Proposal Bonds Errors
+
+#### `Already initialized` (`ProposalBondsError::AlreadyInitialized`)
+
+**Cause:** `initialize()` was called on a contract that has already been initialized. The `Admin` key is already set in instance storage.
+
+**Fix:**
+1. Verify `PROPOSAL_BONDS_ADDRESS` in your `.env` points to the correct, freshly deployed contract.
+2. If deploying from scratch, use a new contract address.
+3. Run `scripts/verify-deployment.sh` to confirm initialization status.
+
+---
+
+#### `Not initialized` (`ProposalBondsError::NotInitialized`)
+
+**Cause:** A contract method was called before `initialize()` was invoked. Instance storage has no `Admin`, `BondToken`, `BondAmount`, or `Governor` key yet.
+
+**Fix:**
+1. Ensure the deployment script completed successfully and called `initialize()` on the proposal-bonds contract.
+2. Verify `PROPOSAL_BONDS_ADDRESS` points to the deployed and initialized contract on the active network.
+
+---
+
+#### `Bond already locked` (`ProposalBondsError::BondAlreadyLocked`)
+
+**Cause:** `lock_bond()` was called with a `description_hash` that already has an existing bond in storage. Each proposal description hash may only have one active bond.
+
+**Fix:**
+1. Ensure `lock_bond()` is only called once per unique proposal `description_hash`.
+2. Query `get_bond(description_hash)` before locking to check whether a bond already exists.
+3. If re-proposing after a refund or slash, compute a new `description_hash` (e.g., by appending a nonce to the description).
+
+---
+
+#### `Bond not found` (`ProposalBondsError::BondNotFound`)
+
+**Cause:** `refund_bond()` or `slash()` was called with a `description_hash` for which no bond record exists in persistent storage.
+
+**Fix:**
+1. Verify the `description_hash` matches the one used in the original `lock_bond()` call (byte-for-byte identical).
+2. Confirm `lock_bond()` was included in a successfully finalized ledger (not just simulated).
+3. The bond record has a TTL of ~1,000,000 ledgers (~58 days). If the record has expired from storage, the bond cannot be refunded on-chain.
+
+---
+
+#### `Bond not locked` (`ProposalBondsError::BondNotLocked`)
+
+**Cause:** `refund_bond()` or `slash()` was called on a bond that is already in state `Refunded` or `Slashed`. Each bond can only be refunded or slashed once.
+
+**Fix:**
+1. Call `get_bond(description_hash)` and inspect the `state` field before calling `refund_bond()` or `slash()`.
+2. Only bonds with `state = Locked` can be refunded or slashed.
+
+---
+
+#### `Description hash mismatch` (`ProposalBondsError::DescriptionHashMismatch`)
+
+**Cause:** During `refund_bond()`, the `description_hash` stored in the governor's proposal record does not match the `description_hash` used as the bond key. The bond and the proposal are not correlated.
+
+**Fix:**
+1. Ensure the same `description_hash` was passed to both `governor.propose()` and `proposal_bonds.lock_bond()`.
+2. Re-derive the hash from the original proposal description using the same hashing method (SHA-256 of the UTF-8 description string).
+3. Pass the correct `proposal_id` that corresponds to the bonded description.
+
+---
+
+#### `Proposal not terminal` (`ProposalBondsError::ProposalNotTerminal`)
+
+**Cause:** `refund_bond()` was called while the correlated governor proposal is still in a non-terminal state (`Pending`, `Active`, `Queued`, or `Succeeded`). Refunds are only allowed once the proposal has fully concluded.
+
+**Fix:**
+1. Query `governor.state(proposal_id)` to check the current state.
+2. Wait until the proposal reaches `Executed`, `Defeated`, `Expired`, or `Cancelled` before calling `refund_bond()`.
+3. Note: `Queued` is intentionally not considered terminal. If a queued proposal's execution window closes without being executed, the `MaxLockLedgers` escape hatch will eventually allow refund regardless of state.
+
+---
+
+#### `Refund grace not elapsed` (`ProposalBondsError::RefundGraceNotElapsed`)
+
+**Cause:** `refund_bond()` was called before the post-terminal grace window has elapsed. The grace period (measured from `proposal.end_ledger`) gives the community time to submit a `slash` governance proposal before the bond is returned.
+
+**Fix:**
+1. Call `get_settings()` to read the configured `refund_grace_ledgers` value.
+2. Compute the earliest eligible refund ledger as `proposal.end_ledger + refund_grace_ledgers`.
+3. Wait until the current ledger sequence exceeds that value before retrying `refund_bond()`.
+
+---
+
+#### `Not authorized` (`ProposalBondsError::NotAuthorized`)
+
+**Cause:** `slash()` was called by an address that is not the configured governor contract, or `update_bond_amount()` was called by an address that is not the stored admin.
+
+**Fix:**
+1. `slash()` may only be invoked as the execution target of a passed governor proposal (i.e., the caller must be the governor contract address itself).
+2. For `update_bond_amount()`, the caller must match the admin set during `initialize()`. Use the deployer key or the current admin address.
+
+---
+
+#### `Invalid bond amount` (`ProposalBondsError::InvalidBondAmount`)
+
+**Cause:** `initialize()` or `update_bond_amount()` was called with a `bond_amount` of zero or a negative value. Bond amounts must be positive.
+
+**Fix:**
+1. Pass a positive `bond_amount` (in the bond token's smallest unit, accounting for decimals).
+2. Typical bond amounts are expressed in whole token units multiplied by 10^7 (7-decimal Stellar tokens).
+
+---
+
+## Optimistic Governance Errors
+
+#### `Already initialized` (`OptimisticGovernorError::AlreadyInitialized`)
+
+**Cause:** `initialize()` was called on an already-initialized contract. The `Admin` key is present in instance storage.
+
+**Fix:**
+1. Verify `OPTIMISTIC_GOVERNOR_ADDRESS` points to a freshly deployed contract.
+2. Use a new contract address for each governance deployment.
+
+---
+
+#### `Not initialized` (`OptimisticGovernorError::NotInitialized`)
+
+**Cause:** A contract function was called before `initialize()` completed. Required instance keys (`Admin`, `VotesToken`, `ChallengeWindowLedgers`, `ObjectionThresholdBps`, `ProposerBondAmount`, `ProposerBondToken`) are absent.
+
+**Fix:**
+1. Ensure `initialize()` was included in the deployment and succeeded on-chain.
+2. Verify `OPTIMISTIC_GOVERNOR_ADDRESS` in your `.env` is correct for the active network.
+
+---
+
+#### `Invalid configuration` (`OptimisticGovernorError::InvalidConfiguration`)
+
+**Cause:** `initialize()` or `update_config()` was called with out-of-range parameters: `challenge_window_ledgers` is zero, `objection_threshold_bps` is zero or greater than 10 000, or `proposer_bond_amount` is negative.
+
+**Fix:**
+1. Set `challenge_window_ledgers` to at least 1 (typical values: 17 280–86 400 ledgers ≈ 1–5 days).
+2. Set `objection_threshold_bps` between 1 and 10 000 (e.g., `500` = 5% of total supply).
+3. Set `proposer_bond_amount` to 0 (disabled) or a positive value. Negative values are rejected.
+
+---
+
+#### `Invalid calldata` (`OptimisticGovernorError::InvalidCalldata`)
+
+**Cause:** The `calldata` bytes passed to `propose()` or decoded during `execute()` are not valid XDR-encoded `Vec<Val>`. The bytes cannot be deserialized.
+
+**Fix:**
+1. Encode calldata using the Soroban SDK's XDR serializer: `Vec::<Val>::to_xdr(&env, &args)`.
+2. Pass an empty `Bytes` (`Bytes::new(&env)`) for proposals that invoke a zero-argument function.
+3. Re-derive the calldata from the SDK rather than constructing raw bytes manually.
+
+---
+
+#### `Proposal not found` (`OptimisticGovernorError::ProposalNotFound`)
+
+**Cause:** The `proposal_id` passed to `object()`, `finalize()`, `execute()`, `cancel()`, or `get_proposal()` does not exist in persistent storage.
+
+**Fix:**
+1. Verify the `proposal_id` returned by the original `propose()` call.
+2. Confirm `OPTIMISTIC_GOVERNOR_ADDRESS` is set to the correct contract for the active network.
+3. Proposal records have a TTL of ~1,000,000 ledgers. Ensure the record has not expired.
+
+---
+
+#### `Not in challenge window` (`OptimisticGovernorError::NotInChallengeWindow`)
+
+**Cause:** `object()` was called on a proposal that is no longer in the `ChallengeWindow` state (it is already `Objected`, `Passed`, `Executed`, or `Cancelled`).
+
+**Fix:**
+1. Call `get_proposal(proposal_id)` and inspect the `state` field.
+2. Objections are only valid while a proposal is in state `ChallengeWindow`.
+
+---
+
+#### `Challenge window not elapsed` (`OptimisticGovernorError::ChallengeWindowNotElapsed`)
+
+**Cause:** `finalize()` was called before the proposal's `challenge_end_ledger` has passed. The challenge window is still open.
+
+**Fix:**
+1. Call `get_proposal(proposal_id)` and check `challenge_end_ledger`.
+2. Wait until `current_ledger >= challenge_end_ledger` before calling `finalize()`.
+3. Monitor the current ledger sequence with `stellar ledger fetch --network testnet | jq .sequence`.
+
+---
+
+#### `Challenge window elapsed` (`OptimisticGovernorError::ChallengeWindowElapsed`)
+
+**Cause:** `object()` was called after the proposal's `challenge_end_ledger` has already passed. The window for lodging objections is closed.
+
+**Fix:**
+1. Check `challenge_end_ledger` from `get_proposal(proposal_id)` before calling `object()`.
+2. If the window has elapsed and the proposal has not been finalized yet, call `finalize()` to transition it to `Passed`.
+
+---
+
+#### `Already objected` (`OptimisticGovernorError::AlreadyObjected`)
+
+**Cause:** The same address has already cast an objection for this proposal. Each address may object only once per proposal.
+
+**Fix:** Each wallet can only object once. Show the user their existing objection rather than allowing a second submission.
+
+---
+
+#### `No voting power` (`OptimisticGovernorError::NoVotingPower`)
+
+**Cause:** The objector had zero voting power at the proposal's `created_ledger` snapshot. Objection weight is read from historical records — tokens acquired after the proposal was created do not count.
+
+**Fix:**
+1. Ensure tokens were delegated (self-delegated or to another account) **before** the proposal's `created_ledger`.
+2. Query `votes.get_past_votes(objector, proposal.created_ledger)` to verify historical power before submitting.
+
+---
+
+#### `Proposal objected` (`OptimisticGovernorError::ProposalObjected`)
+
+**Cause:** An operation that requires a non-objected proposal was called on a proposal already in state `Objected`.
+
+**Fix:**
+1. Check `proposal.state` with `get_proposal(proposal_id)` before calling `finalize()` or `execute()`.
+2. An objected proposal must be cancelled by the proposer or re-submitted as a new proposal.
+
+---
+
+#### `Proposal not passed` (`OptimisticGovernorError::ProposalNotPassed`)
+
+**Cause:** `execute()` was called on a proposal that is not yet in the `Passed` state. The proposal may still be in `ChallengeWindow`, or it has been `Objected`, `Executed`, or `Cancelled`.
+
+**Fix:**
+1. Call `finalize(proposal_id)` first to transition a `ChallengeWindow` proposal to `Passed` (requires the challenge window to have elapsed).
+2. Verify `proposal.state == Passed` with `get_proposal(proposal_id)` before calling `execute()`.
+
+---
+
+#### `Proposal already finalized` (`OptimisticGovernorError::ProposalAlreadyFinalized`)
+
+**Cause:** `finalize()` was called on a proposal that is no longer in `ChallengeWindow` state — it has already been finalized to `Passed`, `Objected`, `Executed`, or `Cancelled`.
+
+**Fix:**
+1. Call `get_proposal(proposal_id)` to check the current state.
+2. If the proposal is already `Passed`, proceed directly to `execute()`.
+
+---
+
+#### `Unauthorized` (`OptimisticGovernorError::Unauthorized`)
+
+**Cause:** `cancel()` was called by an address that is not the proposal's `proposer`, or `update_config()` was called by an address that is not the stored admin.
+
+**Fix:**
+1. Only the original proposer may cancel their own optimistic proposal.
+2. Only the admin set during `initialize()` may call `update_config()`.
+
+---
+
+#### `Arithmetic overflow` (`OptimisticGovernorError::ArithmeticOverflow`)
+
+**Cause:** An internal checked arithmetic operation (e.g., proposal ID counter increment, objection vote accumulation, `challenge_end_ledger` calculation) overflowed.
+
+**Fix:**
+1. This should not occur under normal operating conditions. Report as a bug if it is triggered with normal input values.
+2. If objection vote accumulation overflowed, it indicates total objection power exceeded `i128::MAX`, which is not practically possible.
+
+---
+
+#### `Proposal not cancellable` (`OptimisticGovernorError::ProposalNotCancellable`)
+
+**Cause:** `cancel()` was called on a proposal that is in state `Passed`, `Executed`, or `Cancelled`. Only proposals in `ChallengeWindow` or `Objected` state can be cancelled.
+
+**Fix:**
+1. Check `proposal.state` with `get_proposal(proposal_id)` before calling `cancel()`.
+2. A `Passed` proposal has already cleared the challenge window and cannot be cancelled; it can only be executed.
+
+---
+
+## Conviction Voting Errors
+
+#### `Already initialized` (`ConvictionVotingError::AlreadyInitialized`)
+
+**Cause:** `initialize()` was called on a conviction voting contract that has already been initialized.
+
+**Fix:**
+1. Verify `CONVICTION_VOTING_ADDRESS` in your `.env` points to a newly deployed contract.
+2. Use a new contract address for each deployment.
+
+---
+
+#### `Not initialized` (`ConvictionVotingError::NotInitialized`)
+
+**Cause:** A contract function was called before `initialize()` completed. Required instance keys (`Admin`, `VotesToken`, `DecayBps`, `MaxRatioBps`, `MinThresholdConviction`, `WeightBps`) are absent.
+
+**Fix:**
+1. Ensure `initialize()` succeeded on-chain during deployment.
+2. Verify `CONVICTION_VOTING_ADDRESS` is set for the correct network.
+
+---
+
+#### `Invalid configuration` (`ConvictionVotingError::InvalidConfiguration`)
+
+**Cause:** `initialize()` was called with out-of-range parameters: `decay_bps` is 0 or ≥ 10 000; `max_ratio_bps` is 0 or > 10 000; `min_threshold_conviction` is ≤ 0; `weight_bps` is 0 or > 10 000.
+
+**Fix:**
+1. Set `decay_bps` between 1 and 9 999 (e.g., `9 000` = 90% retention per ledger interval).
+2. Set `max_ratio_bps` between 1 and 10 000 (e.g., `2 000` = a proposal may request up to 20% of supply).
+3. Set `min_threshold_conviction` to a positive value.
+4. Set `weight_bps` between 1 and 10 000.
+5. Refer to [docs/conviction-voting.md](./conviction-voting.md) for typical parameter ranges.
+
+---
+
+#### `Invalid amount` (`ConvictionVotingError::InvalidAmount`)
+
+**Cause:** `stake()` was called with `amount <= 0`, `create_proposal()` was called with `requested_amount < 0`, or `get_required_threshold()` was called with a negative `requested_amount`.
+
+**Fix:**
+1. Pass a positive stake amount to `stake()`.
+2. Pass a non-negative `requested_amount` to `create_proposal()` (use 0 for a non-treasury proposal).
+
+---
+
+#### `Proposal not found` (`ConvictionVotingError::ProposalNotFound`)
+
+**Cause:** The `proposal_id` passed to `stake()`, `checkpoint_conviction()`, `get_proposal()`, `cancel_proposal()`, or `get_stakes()` does not exist in persistent storage.
+
+**Fix:**
+1. Verify the `proposal_id` returned by the original `create_proposal()` call.
+2. Confirm `CONVICTION_VOTING_ADDRESS` is set to the correct contract for the active network.
+
+---
+
+#### `Proposal closed` (`ConvictionVotingError::ProposalClosed`)
+
+**Cause:** `stake()` or `cancel_proposal()` was called on a proposal that has already been executed or cancelled. No further staking or cancellation is allowed once a proposal is closed.
+
+**Fix:**
+1. Query `get_proposal(proposal_id)` and check `proposal.executed` and `proposal.cancelled` flags before acting.
+2. To stake on active proposals only, filter on `!executed && !cancelled`.
+
+---
+
+#### `Insufficient voting power` (`ConvictionVotingError::InsufficientVotingPower`)
+
+**Cause:** `stake()` was called with an `amount` greater than the staker's current live voting power (as returned by `get_votes(staker)`). Conviction voting uses live balances, not historical snapshots.
+
+**Fix:**
+1. Call `votes.get_votes(staker)` to read the current voting power before staking.
+2. Ensure tokens are wrapped and delegated via `token_votes.wrap()` and `votes.delegate(account, account)`.
+3. Do not stake more than the current delegated balance.
+
+---
+
+#### `Stake not found` (`ConvictionVotingError::StakeNotFound`)
+
+**Cause:** `withdraw_stake()` was called for an address that has no active stake record (`StakeByStaker` key is absent in persistent storage).
+
+**Fix:**
+1. Verify the wallet address has previously called `stake()` and has an active stake.
+2. Query the proposal's stake list with `get_stakes(proposal_id, 0, 100)` to confirm the staker's entry.
+
+---
+
+#### `Unauthorized` (`ConvictionVotingError::Unauthorized`)
+
+**Cause:** `cancel_proposal()` was called by an address that is neither the proposal's `proposer` nor the module admin.
+
+**Fix:**
+1. Only the original proposer or the admin set during `initialize()` may cancel a proposal.
+2. Verify the wallet address matches `proposal.proposer` or the configured admin.
+
+---
+
+#### `Arithmetic overflow` (`ConvictionVotingError::ArithmeticOverflow`)
+
+**Cause:** A checked arithmetic operation in conviction accumulation, threshold calculation, or stake totaling overflowed `i128`. This can happen with extremely large token supplies or very long periods without a conviction checkpoint.
+
+**Fix:**
+1. Call `checkpoint_conviction(proposal_id)` more frequently to reset the accumulation window and avoid overflow from large elapsed-ledger exponentiation.
+2. Report as a bug if it occurs with normal supply and parameter values.
+
+---
+
+#### `Invalid calldata` (`ConvictionVotingError::InvalidCalldata`)
+
+**Cause:** The `calldata` bytes passed to `create_proposal()` or decoded during `checkpoint_conviction()` are not valid XDR-encoded `Vec<Val>`.
+
+**Fix:**
+1. Encode calldata using the Soroban SDK's XDR serializer: `Vec::<Val>::to_xdr(&env, &args)`.
+2. Pass an empty `Bytes` (`Bytes::new(&env)`) for proposals that call a zero-argument function.
+
+---
+
+## Treasury Strategies Errors
+
+#### `Already initialized` (`TreasuryStrategiesError::AlreadyInitialized`)
+
+**Cause:** `initialize()` was called on a treasury strategies contract that has already been initialized. The `Admin` key already exists in instance storage.
+
+**Fix:**
+1. Verify `TREASURY_STRATEGIES_ADDRESS` in your `.env` points to a newly deployed contract.
+2. Use a new contract address for each deployment.
+
+---
+
+#### `Not admin` (`TreasuryStrategiesError::NotAdmin`)
+
+**Cause:** `register_strategy()` or `deactivate_strategy()` was called with an `admin` address that does not match the one stored during `initialize()`.
+
+**Fix:**
+1. Use the admin address configured during deployment for all admin-gated operations.
+2. Admin-only operations are `register_strategy()` and `deactivate_strategy()`.
+
+---
+
+#### `Not treasury` (`TreasuryStrategiesError::NotTreasury`)
+
+**Cause:** `deposit()` or `request_withdrawal()` was called by an address that is not the configured treasury. Only the treasury multisig may move funds into or out of this contract.
+
+**Fix:**
+1. Ensure the caller is the treasury contract address set during `initialize()`.
+2. Verify `TREASURY_ADDRESS` is configured correctly in your deployment `.env`.
+
+---
+
+#### `Strategy not found` (`TreasuryStrategiesError::StrategyNotFound`)
+
+**Cause:** `deactivate_strategy()`, `request_withdrawal()`, `claim_withdrawal()`, or `get_strategy()` was called with a `strategy_id` that does not exist in persistent storage.
+
+**Fix:**
+1. Use only `strategy_id` values returned by previous `register_strategy()` calls.
+2. Strategy IDs are sequential integers starting at 1. Verify the correct ID is used.
+
+---
+
+#### `No active strategy` (`TreasuryStrategiesError::NoActiveStrategy`)
+
+**Cause:** `deposit()` was called but no active strategy exists for the deposited token. Either no strategy has been registered for this token, or all registered strategies have been deactivated.
+
+**Fix:**
+1. Register at least one active strategy for the deposit token using `register_strategy()` before depositing.
+2. If strategies were deactivated, reactivate one or register a new strategy.
+3. Confirm the `token` address in the `deposit()` call matches the `token` used in `register_strategy()`.
+
+---
+
+#### `Allocation cap exceeded` (`TreasuryStrategiesError::AllocationCapExceeded`)
+
+**Cause:** `deposit()` was called but all active strategies for this token are already at or above their `max_allocation_bps` cap relative to the total deposited balance. No strategy has room for the requested deposit amount.
+
+**Fix:**
+1. Register an additional strategy with a higher or unreached `max_allocation_bps`.
+2. Increase the `max_allocation_bps` of an existing strategy by deactivating and re-registering it with a higher cap.
+3. Reduce the deposit `amount` so it fits within an existing strategy's remaining capacity.
+
+---
+
+#### `Insufficient allocation` (`TreasuryStrategiesError::InsufficientAllocation`)
+
+**Cause:** `request_withdrawal()` was called with an `amount` greater than the current allocation for the given `strategy_id`. You cannot withdraw more than what was deposited into that strategy.
+
+**Fix:**
+1. Call `get_allocation(strategy_id)` to read the current `allocation.amount`.
+2. Request a withdrawal of at most `allocation.amount`.
+
+---
+
+#### `Withdrawal not found` (`TreasuryStrategiesError::WithdrawalNotFound`)
+
+**Cause:** `claim_withdrawal()` was called with a `withdrawal_id` that does not exist in persistent storage.
+
+**Fix:**
+1. Use only `withdrawal_id` values returned by a previous `request_withdrawal()` call.
+2. Withdrawal IDs are sequential integers starting at 1. Verify the correct ID is used.
+
+---
+
+#### `Withdrawal already claimed` (`TreasuryStrategiesError::WithdrawalAlreadyClaimed`)
+
+**Cause:** `claim_withdrawal()` was called on a withdrawal request whose `claimed` flag is already `true`. Each withdrawal can only be claimed once.
+
+**Fix:**
+1. Check `withdrawal.claimed` by querying the withdrawal record before calling `claim_withdrawal()`.
+2. If already claimed, the funds have already been returned to the treasury.
+
+---
+
+#### `Withdrawal not yet claimable` (`TreasuryStrategiesError::WithdrawalNotYetClaimable`)
+
+**Cause:** `claim_withdrawal()` was called before the withdrawal's `claimable_ledger` has been reached. The strategy's `withdrawal_cooldown_ledgers` has not elapsed since the withdrawal request.
+
+**Fix:**
+1. Read `withdrawal.claimable_ledger` from the request record.
+2. Wait until the current ledger sequence is ≥ `claimable_ledger` before calling `claim_withdrawal()`.
+3. Monitor ledger progress with `stellar ledger fetch --network testnet | jq .sequence`.
+
+---
+
+#### `Invalid amount` (`TreasuryStrategiesError::InvalidAmount`)
+
+**Cause:** `deposit()` or `request_withdrawal()` was called with an `amount` of zero or a negative value.
+
+**Fix:**
+1. Pass a positive `amount` to both `deposit()` and `request_withdrawal()`.
+2. Account for token decimals: for 7-decimal tokens, 1 whole token = 10 000 000 units.
+
+---
+
+#### `Invalid bps` (`TreasuryStrategiesError::InvalidBps`)
+
+**Cause:** `register_strategy()` was called with a `max_allocation_bps` greater than 10 000 (100%). A strategy cannot be allocated more than 100% of total deposited funds.
+
+**Fix:**
+1. Set `max_allocation_bps` between 1 and 10 000 (e.g., `5 000` = 50% of total balance).
+2. The sum of all active strategies' caps is not enforced by the contract — it is the admin's responsibility to ensure allocations are coherent.
+
+---
+
+#### `Not initialized` (`TreasuryStrategiesError::NotInitialized`)
+
+**Cause:** A function that requires instance storage (`Admin`, `Treasury`) was called before `initialize()` completed. This can also surface during `claim_withdrawal()` if the `Treasury` key has been corrupted or the contract was never initialized.
+
+**Fix:**
+1. Ensure `initialize()` was called during deployment and succeeded on-chain.
+2. Verify `TREASURY_STRATEGIES_ADDRESS` in your `.env` points to the deployed and initialized contract.
+
+---
+
+## Signaling Errors
+
+#### `Already initialized` (`SignalAnchorError::AlreadyInitialized`)
+
+**Cause:** `initialize()` was called on a signal anchor contract that has already been initialized. The `Admin` key is already set in instance storage.
+
+**Fix:**
+1. Verify `SIGNAL_ANCHOR_ADDRESS` in your `.env` points to a newly deployed contract.
+2. Use a new contract address for each deployment.
+3. Call `admin()` to confirm the contract is already initialized and identify the current admin.
+
+---
+
+#### `Already anchored` (`SignalAnchorError::AlreadyAnchored`)
+
+**Cause:** `anchor_result()` was called for a `poll_id` that already has an anchor record in persistent storage. Each poll result is immutable once anchored — a second call for the same `poll_id` is rejected.
+
+**Fix:**
+1. Call `get_anchor(poll_id)` to check whether a result has already been anchored before calling `anchor_result()`.
+2. If the anchored result is incorrect, it cannot be overwritten on-chain; the off-chain signaling service should treat this as a critical error and investigate the root cause before anchoring any further polls.
+3. To re-anchor (e.g., after a data error during development), deploy a fresh contract instance and re-anchor from the beginning.
+
+---
+
+#### `Unauthorized` (`SignalAnchorError::Unauthorized`)
+
+**Cause:** `anchor_result()` was called with an `anchorer` address that does not match the admin configured during `initialize()`. Only the backend's designated signaling service account may anchor poll results.
+
+**Fix:**
+1. Ensure the backend signaling service signs `anchor_result()` with the admin key configured during deployment.
+2. Verify `SIGNAL_ANCHOR_ADMIN_SECRET` in your backend `.env` matches the admin address stored in the contract (query with `admin()`).
+
+---
+
+#### `Not initialized` (`SignalAnchorError::NotInitialized`)
+
+**Cause:** `anchor_result()` or `admin()` was called before `initialize()` has been invoked. The `Admin` key is absent from instance storage.
+
+**Fix:**
+1. Ensure `initialize()` was called during deployment and succeeded on-chain.
+2. Verify `SIGNAL_ANCHOR_ADDRESS` in your `.env` or backend config points to the deployed and initialized contract.
+3. Run `scripts/verify-deployment.sh` to confirm signal-anchor initialization status.
 
 ---
 

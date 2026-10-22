@@ -49,6 +49,12 @@ pub enum DataKey {
 /// full; `LockHistoryCount` still tracks the monotonic append position.
 pub const MAX_LOCK_HISTORY_ENTRIES: u32 = 32;
 
+/// Hard upper bound on `max_multiplier_bps` accepted by `update_escrow_config`
+/// and `initialize`. A 20x multiplier (200 000 bps) is generous enough for any
+/// real governance deployment while keeping downstream boost arithmetic safely
+/// inside `i128` for any plausible lock amount.
+pub const MAX_MULTIPLIER_BPS_CEILING: u32 = 200_000;
+
 #[contract]
 pub struct VoteEscrowContract;
 
@@ -65,7 +71,7 @@ impl VoteEscrowContract {
         admin.require_auth();
 
         if env.storage().instance().has(&DataKey::Admin) {
-            env.panic_with_error(VoteEscrowError::NotInitialized);
+            env.panic_with_error(VoteEscrowError::AlreadyInitialized);
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -506,6 +512,34 @@ impl VoteEscrowContract {
         max_multiplier_bps: u32,
     ) {
         admin.require_auth();
+
+        // Verify the caller is the stored admin, not just any authenticated address.
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .unwrap_or_else(|| env.panic_with_error(VoteEscrowError::NotInitialized));
+        if admin != stored_admin {
+            env.panic_with_error(VoteEscrowError::Unauthorized);
+        }
+
+        // Reject configurations that would permanently brick new locks or corrupt
+        // voting-power arithmetic:
+        //
+        // 1. max_lock_duration == 0 would make every duration invalid at the
+        //    `duration_ledgers > max_duration` guard in create_lock.
+        // 2. min > max inverts the valid range so the same guard can never pass.
+        // 3. max_multiplier_bps above the ceiling risks i128 overflow in the
+        //    boost calculation: amount * max_multiplier_bps / 10_000.
+        if max_lock_duration == 0 {
+            env.panic_with_error(VoteEscrowError::InvalidDuration);
+        }
+        if min_lock_duration > max_lock_duration {
+            env.panic_with_error(VoteEscrowError::InvalidDuration);
+        }
+        if max_multiplier_bps > MAX_MULTIPLIER_BPS_CEILING {
+            env.panic_with_error(VoteEscrowError::InvalidAmount);
+        }
 
         let old_min_lock_duration: u32 = env
             .storage()
