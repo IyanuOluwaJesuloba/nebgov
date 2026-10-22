@@ -189,6 +189,7 @@ update_escrow_config(
 - Each parameter is optional; omit to keep current value
 - Changes apply only to new locks, not existing ones
 - Existing locks continue to decay with their original parameters
+- `admin` must be the stored admin. Any other caller, even one who passes its own address and authorizes it, fails with `Unauthorized`
 
 ## Error Handling
 
@@ -202,6 +203,7 @@ The contract emits typed errors for common failure cases:
 | `LockNotFound`          | Holder has no lock (or it was withdrawn)          |
 | `LockAlreadyWithdrawn`  | Attempting operation on a withdrawn lock          |
 | `ArithmeticOverflow`    | Integer overflow in lock calculations             |
+| `Unauthorized`          | `update_escrow_config` caller is not the admin    |
 
 ## Events
 

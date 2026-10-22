@@ -859,6 +859,52 @@ fn test_update_escrow_config() {
     });
 }
 
+#[test]
+#[should_panic(expected = "Error(Contract, #9)")]
+fn test_update_escrow_config_rejects_non_admin() {
+    let f = setup();
+    let client = VoteEscrowContractClient::new(&f.env, &f.contract_id);
+
+    // `mock_all_auths` lets the intruder pass `require_auth`, so only the
+    // stored-admin comparison can reject this call.
+    client.update_escrow_config(&f.user, &50, &5_000, &10_000);
+}
+
+#[test]
+fn test_update_escrow_config_keeps_config_after_rejected_non_admin() {
+    let f = setup();
+    let client = VoteEscrowContractClient::new(&f.env, &f.contract_id);
+
+    let result = client.try_update_escrow_config(&f.user, &50, &5_000, &10_000);
+    assert!(result.is_err());
+
+    f.env.as_contract(&f.contract_id, || {
+        let stored_min: u32 = f
+            .env
+            .storage()
+            .instance()
+            .get(&DataKey::MinLockDuration)
+            .unwrap();
+        assert_eq!(stored_min, MIN_LOCK_DURATION);
+
+        let stored_max: u32 = f
+            .env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxLockDuration)
+            .unwrap();
+        assert_eq!(stored_max, MAX_LOCK_DURATION);
+
+        let stored_multiplier: u32 = f
+            .env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxMultiplierBps)
+            .unwrap();
+        assert_eq!(stored_multiplier, MAX_MULTIPLIER_BPS);
+    });
+}
+
 /// Finds the first event published by `contract_id` whose first topic is
 /// `topic`, and returns its full topic list and payload. Panics if none
 /// matches, so a missing/renamed event fails the test loudly.

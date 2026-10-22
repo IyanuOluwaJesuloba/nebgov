@@ -507,6 +507,16 @@ impl VoteEscrowContract {
     ) {
         admin.require_auth();
 
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(VoteEscrowError::NotInitialized)
+            .unwrap();
+        if admin != stored_admin {
+            env.panic_with_error(VoteEscrowError::Unauthorized);
+        }
+
         env.storage()
             .instance()
             .set(&DataKey::MinLockDuration, &min_lock_duration);
