@@ -1274,3 +1274,87 @@ fn test_global_checkpoints_are_stored_per_index() {
         assert_eq!(VoteEscrowContract::get_past_total_supply(f.env.clone(), 150), 3_000);
     });
 }
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_update_escrow_config_rejects_min_greater_than_max() {
+    let f = setup();
+    let client = VoteEscrowContractClient::new(&f.env, &f.contract_id);
+
+    // min_lock_duration (5_000) > max_lock_duration (1_000): must be rejected with
+    // InvalidDuration (#5) before any state is written.
+    client.update_escrow_config(&f.admin, &5_000, &1_000, &MAX_MULTIPLIER_BPS);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #5)")]
+fn test_update_escrow_config_rejects_zero_max_lock_duration() {
+    let f = setup();
+    let client = VoteEscrowContractClient::new(&f.env, &f.contract_id);
+
+    // max_lock_duration == 0 makes every create_lock call unsatisfiable.
+    client.update_escrow_config(&f.admin, &0, &0, &MAX_MULTIPLIER_BPS);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #6)")]
+fn test_update_escrow_config_rejects_multiplier_above_ceiling() {
+    let f = setup();
+    let client = VoteEscrowContractClient::new(&f.env, &f.contract_id);
+
+    // max_multiplier_bps one above the documented ceiling must be rejected with
+    // InvalidAmount (#6).
+    client.update_escrow_config(
+        &f.admin,
+        &MIN_LOCK_DURATION,
+        &MAX_LOCK_DURATION,
+        &(MAX_MULTIPLIER_BPS_CEILING + 1),
+    );
+}
+
+#[test]
+fn test_update_escrow_config_config_unchanged_after_invalid_call() {
+    let f = setup();
+    let client = VoteEscrowContractClient::new(&f.env, &f.contract_id);
+
+    // Each rejected call must leave all three stored keys completely untouched.
+    let cases: &[(u32, u32, u32)] = &[
+        // min > max
+        (5_000, 1_000, MAX_MULTIPLIER_BPS),
+        // max == 0
+        (0, 0, MAX_MULTIPLIER_BPS),
+        // multiplier above ceiling
+        (MIN_LOCK_DURATION, MAX_LOCK_DURATION, MAX_MULTIPLIER_BPS_CEILING + 1),
+    ];
+
+    for &(new_min, new_max, new_mul) in cases {
+        let result = client.try_update_escrow_config(&f.admin, &new_min, &new_max, &new_mul);
+        assert!(result.is_err(), "expected rejection for ({new_min}, {new_max}, {new_mul})");
+    }
+
+    f.env.as_contract(&f.contract_id, || {
+        let stored_min: u32 = f
+            .env
+            .storage()
+            .instance()
+            .get(&DataKey::MinLockDuration)
+            .unwrap();
+        assert_eq!(stored_min, MIN_LOCK_DURATION, "MinLockDuration must be unchanged");
+
+        let stored_max: u32 = f
+            .env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxLockDuration)
+            .unwrap();
+        assert_eq!(stored_max, MAX_LOCK_DURATION, "MaxLockDuration must be unchanged");
+
+        let stored_mul: u32 = f
+            .env
+            .storage()
+            .instance()
+            .get(&DataKey::MaxMultiplierBps)
+            .unwrap();
+        assert_eq!(stored_mul, MAX_MULTIPLIER_BPS, "MaxMultiplierBps must be unchanged");
+    });
+}
