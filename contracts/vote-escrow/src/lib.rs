@@ -65,7 +65,7 @@ impl VoteEscrowContract {
         admin.require_auth();
 
         if env.storage().instance().has(&DataKey::Admin) {
-            env.panic_with_error(VoteEscrowError::NotInitialized);
+            env.panic_with_error(VoteEscrowError::AlreadyInitialized);
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);

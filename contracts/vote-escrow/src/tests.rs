@@ -97,6 +97,24 @@ fn test_initialize() {
 }
 
 #[test]
+fn test_initialize_already_initialized_fails() {
+    let f = setup();
+    let client = VoteEscrowContractClient::new(&f.env, &f.contract_id);
+
+    let err = client
+        .try_initialize(
+            &f.admin,
+            &f.token,
+            &MIN_LOCK_DURATION,
+            &MAX_LOCK_DURATION,
+            &MAX_MULTIPLIER_BPS,
+        )
+        .unwrap_err()
+        .unwrap();
+    assert_eq!(err, VoteEscrowError::AlreadyInitialized.into());
+}
+
+#[test]
 fn test_create_lock_basic() {
     let f = setup();
     let amount = 1_000;
@@ -1153,13 +1171,25 @@ fn test_uninitialized_contract_returns_typed_error() {
     let contract_id = env.register(VoteEscrowContract, ());
     let client = VoteEscrowContractClient::new(&env, &contract_id);
 
-    assert!(matches!(client.try_get_admin(), Err(Ok(VoteEscrowError::NotInitialized))));
-    assert!(matches!(client.try_token(), Err(Ok(VoteEscrowError::NotInitialized))));
-    assert!(matches!(client.try_get_total_locked(), Err(Ok(VoteEscrowError::NotInitialized))));
-    assert!(matches!(
-        client.try_create_lock(&user, &1_000, &MIN_LOCK_DURATION),
-        Err(Ok(VoteEscrowError::NotInitialized))
-    ));
+    assert_eq!(
+        client.try_get_admin().unwrap_err().unwrap(),
+        VoteEscrowError::NotInitialized.into()
+    );
+    assert_eq!(
+        client.try_token().unwrap_err().unwrap(),
+        VoteEscrowError::NotInitialized.into()
+    );
+    assert_eq!(
+        client.try_get_total_locked().unwrap_err().unwrap(),
+        VoteEscrowError::NotInitialized.into()
+    );
+    assert_eq!(
+        client
+            .try_create_lock(&user, &1_000, &MIN_LOCK_DURATION)
+            .unwrap_err()
+            .unwrap(),
+        VoteEscrowError::NotInitialized.into()
+    );
 }
 
 #[test]
