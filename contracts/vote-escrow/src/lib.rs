@@ -123,7 +123,7 @@ impl VoteEscrowContract {
                 .get(&DataKey::Lock(owner.clone()))
                 .unwrap();
             if !existing_lock.withdrawn {
-                env.panic_with_error(VoteEscrowError::LockNotFound);
+                env.panic_with_error(VoteEscrowError::LockAlreadyExists);
             }
         }
 
